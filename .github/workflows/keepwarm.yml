@@ -1,0 +1,38 @@
+# Backup keep-warm pinger for getgrocify.onrender.com — see README.md.
+# GitHub cron is best-effort (fires can drift several minutes past schedule),
+# which is exactly why this is the backup and a Cloudflare Worker is the primary.
+name: keep grocify warm
+on:
+  schedule:
+    # Every 10 min except 01:00–02:59 UTC — the same nightly pause as the primary,
+    # keeping the app inside Render's 750 free instance-hours/month.
+    - cron: '*/10 0,3-23 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: keepwarm
+  cancel-in-progress: false
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Ping /healthz (generous timeout — a cold instance takes 1–2 min to wake)
+        run: |
+          curl -fsS -o /dev/null --max-time 150 --retry 1 --retry-delay 15 --retry-all-errors \
+            -w 'HTTP %{http_code} in %{time_total}s\n' \
+            https://getgrocify.onrender.com/healthz
+      - name: Checkout (for the keep-enabled commit below)
+        uses: actions/checkout@v4
+      - name: Keep this scheduled workflow enabled
+        # GitHub auto-disables scheduled workflows after 60 days without repo activity;
+        # an empty commit every ~50 days resets that clock.
+        run: |
+          days_since_commit=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          if [ "$days_since_commit" -ge 50 ]; then
+            git config user.name "keepwarm-bot"
+            git config user.email "keepwarm-bot@users.noreply.github.com"
+            git commit --allow-empty -m "keepalive: reset the 60-day scheduled-workflow timer"
+            git push
+          fi
